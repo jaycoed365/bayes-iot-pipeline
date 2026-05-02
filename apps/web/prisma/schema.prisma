@@ -1,0 +1,67 @@
+// Prisma schema for bayes-iot-pipeline
+// Phase 1: EnvReading
+// Phase 2: Forecast, Anomaly (already defined so we don't migrate later)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Raw sensor reading from device (or simulator)
+model EnvReading {
+  id          String   @id @default(cuid())
+  deviceUid   String
+  receivedAt  DateTime @default(now())  // when our service wrote it
+  capturedAt  DateTime                  // when device sampled it
+  ingestedAt  DateTime                  // when ingest webhook received it
+  tempC       Float
+  humidity    Float
+  pressureHpa Float?
+  vocOhms     Float?
+
+  // Idempotency: same device + same capture instant = same row
+  @@unique([deviceUid, capturedAt])
+  @@index([capturedAt])
+  @@index([deviceUid, capturedAt])
+}
+
+// Forecast output (Phase 2)
+// One row per (model, device, target_time)
+model Forecast {
+  id          String   @id @default(cuid())
+  deviceUid   String
+  modelName   String   // "prophet", "pymc-bayesian", "arima"
+  modelVersion String  // "v1", "v2", etc.
+  forecastAt  DateTime @default(now())  // when forecast was made
+  targetAt    DateTime                  // time being forecasted
+  tempC       Float                     // point estimate
+  tempCLower  Float?                    // 90% credible/confidence interval lower
+  tempCUpper  Float?                    // 90% credible/confidence interval upper
+  humidity    Float?
+  humidityLower Float?
+  humidityUpper Float?
+
+  @@unique([deviceUid, modelName, modelVersion, targetAt])
+  @@index([deviceUid, targetAt])
+  @@index([modelName, forecastAt])
+}
+
+// Anomaly flag (Phase 2)
+model Anomaly {
+  id          String   @id @default(cuid())
+  deviceUid   String
+  detectedAt  DateTime @default(now())
+  capturedAt  DateTime  // when the anomalous reading was captured
+  metric      String    // "temp_c", "humidity"
+  observedValue Float
+  expectedValue Float
+  deviation   Float     // signed difference
+  severity    String    // "low", "medium", "high"
+  modelName   String    // which model flagged it
+
+  @@index([deviceUid, detectedAt])
+}
