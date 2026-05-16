@@ -154,8 +154,8 @@ export default function Dashboard() {
         timestamp: new Date(f.targetAt).getTime(),
         actual: null,
         forecast: f.tempC,
-        lower: f.tempCLower,
-        upper: f.tempCUpper,
+        lower: f.tempCLower !== null ? Math.max(f.tempCLower, chartTempMin) : null,
+        upper: f.tempCUpper !== null ? Math.min(f.tempCUpper, chartTempMax) : null,
       });
     });
   }
