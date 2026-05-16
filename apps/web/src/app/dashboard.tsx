@@ -19,8 +19,8 @@ interface Reading {
   deviceUid: string;
   tempC: number;
   humidity: number;
-  pressureHpa: number;
-  vocOhms: number;
+  pressureHpa: number | null;
+  vocOhms: number | null;
   capturedAt: string;
 }
 
@@ -182,10 +182,10 @@ export default function Dashboard() {
   const tempMax = Math.max(...readings.map((r) => r.tempC));
   const humMin = Math.min(...readings.map((r) => r.humidity));
   const humMax = Math.max(...readings.map((r) => r.humidity));
-  const pressMin = Math.min(...readings.map((r) => r.pressureHpa));
-  const pressMax = Math.max(...readings.map((r) => r.pressureHpa));
-  const vocMin = Math.min(...readings.map((r) => r.vocOhms));
-  const vocMax = Math.max(...readings.map((r) => r.vocOhms));
+  const pressMin = Math.min(...readings.map((r) => r.pressureHpa ?? 0));
+  const pressMax = Math.max(...readings.map((r) => r.pressureHpa ?? 0));
+  const vocMin = Math.min(...readings.map((r) => r.vocOhms ?? 0));
+  const vocMax = Math.max(...readings.map((r) => r.vocOhms ?? 0));
 
   return (
     <div className="min-h-screen bg-slate-950 text-white p-8">
@@ -325,7 +325,7 @@ export default function Dashboard() {
           <div className="mb-4">
             <h3 className="text-sm text-slate-400 uppercase tracking-wide">Pressure</h3>
             <div className="text-3xl font-bold text-purple-400">
-              {latest.pressureHpa.toFixed(1)} hPa
+              {latest.pressureHpa?.toFixed(1) ?? 'N/A'} hPa
             </div>
             <div className="text-xs text-slate-500 mt-1">
               min {pressMin.toFixed(1)} · max {pressMax.toFixed(1)}
@@ -350,7 +350,7 @@ export default function Dashboard() {
           <div className="mb-4">
             <h3 className="text-sm text-slate-400 uppercase tracking-wide">VOC Gas</h3>
             <div className="text-3xl font-bold text-green-400">
-              {latest.vocOhms.toFixed(0)} Ω
+              {latest.vocOhms?.toFixed(0) ?? 'N/A'} Ω
             </div>
             <div className="text-xs text-slate-500 mt-1">
               min {vocMin.toFixed(0)} · max {vocMax.toFixed(0)}
