@@ -247,7 +247,7 @@ export default function Dashboard() {
                 interval="preserveStartEnd"
                 tick={{ fontSize: 9 }}
               />
-              <YAxis stroke="#64748b" fontSize={10} domain={[chartTempMin, chartTempMax]} />
+              <YAxis stroke="#64748b" fontSize={10} domain={[chartTempMin, chartTempMax]} allowDataOverflow={true} />
               <Tooltip
                 contentStyle={{ backgroundColor: '#1e293b', border: 'none' }}
                 labelStyle={{ color: '#94a3b8' }}
