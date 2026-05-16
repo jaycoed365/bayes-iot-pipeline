@@ -27,9 +27,18 @@ interface Reading {
 interface Forecast {
   id: string;
   targetAt: string;
-  tempC: number;
-  tempCLower: number;
-  tempCUpper: number;
+  tempC: number | null;
+  tempCLower: number | null;
+  tempCUpper: number | null;
+}
+
+interface ChartPoint {
+  time: string;
+  timestamp: number;
+  actual: number | null;
+  forecast: number | null;
+  lower: number | null;
+  upper: number | null;
 }
 
 interface ApiResponse {
@@ -128,7 +137,7 @@ export default function Dashboard() {
   }
 
   // Prepare temperature data with forecasts
-  const tempData = readings.map((r) => ({
+  const tempData: ChartPoint[] = readings.map((r) => ({
     time: new Date(r.capturedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     timestamp: new Date(r.capturedAt).getTime(),
     actual: r.tempC,
