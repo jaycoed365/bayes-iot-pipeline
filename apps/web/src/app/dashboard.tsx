@@ -186,6 +186,8 @@ export default function Dashboard() {
   const pressMax = Math.max(...readings.map((r) => r.pressureHpa ?? 0));
   const vocMin = Math.min(...readings.map((r) => r.vocOhms ?? 0));
   const vocMax = Math.max(...readings.map((r) => r.vocOhms ?? 0));
+  const chartTempMin = Math.min(...readings.map((r) => r.tempC)) - 1;
+  const chartTempMax = Math.max(...readings.map((r) => r.tempC)) + 1;
 
   return (
     <div className="min-h-screen bg-slate-950 text-white p-8">
@@ -245,7 +247,7 @@ export default function Dashboard() {
                 interval="preserveStartEnd"
                 tick={{ fontSize: 9 }}
               />
-              <YAxis stroke="#64748b" fontSize={10} domain={['dataMin - 1', 'dataMax + 1']} />
+              <YAxis stroke="#64748b" fontSize={10} domain={[chartTempMin, chartTempMax]} />
               <Tooltip
                 contentStyle={{ backgroundColor: '#1e293b', border: 'none' }}
                 labelStyle={{ color: '#94a3b8' }}
