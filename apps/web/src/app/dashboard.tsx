@@ -151,6 +151,7 @@ export default function Dashboard() {
   // Add forecast data
   if (forecasts && forecasts.forecasts.length > 0) {
     forecasts.forecasts.forEach((f) => {
+      if (f.tempC === null || f.tempC < -50 || f.tempC > 60) return; // skip unreasonable numbers
       tempData.push({
         time: new Date(f.targetAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         timestamp: new Date(f.targetAt).getTime(),
@@ -247,7 +248,7 @@ export default function Dashboard() {
                 interval="preserveStartEnd"
                 tick={{ fontSize: 9 }}
               />
-              <YAxis stroke="#64748b" fontSize={10} />
+              <YAxis stroke="#64748b" fontSize={10} domain={[chartTempMin, chartTempMax]} />
               <Tooltip
                 contentStyle={{ backgroundColor: '#1e293b', border: 'none' }}
                 labelStyle={{ color: '#94a3b8' }}
