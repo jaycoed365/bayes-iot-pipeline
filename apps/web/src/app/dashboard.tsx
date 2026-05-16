@@ -156,8 +156,8 @@ export default function Dashboard() {
         timestamp: new Date(f.targetAt).getTime(),
         actual: null,
         forecast: f.tempC,
-        lower: f.tempCLower !== null ? Math.max(f.tempCLower, chartTempMin) : null,
-        upper: f.tempCUpper !== null ? Math.min(f.tempCUpper, chartTempMax) : null,
+        lower: null,
+        upper: null,
       });
     });
   }
@@ -247,8 +247,7 @@ export default function Dashboard() {
                 interval="preserveStartEnd"
                 tick={{ fontSize: 9 }}
               />
-              <YAxis yAxisId="ci" hide={true} />
-              <YAxis stroke="#64748b" fontSize={10} domain={[chartTempMin, chartTempMax]} />
+              <YAxis stroke="#64748b" fontSize={10} />
               <Tooltip
                 contentStyle={{ backgroundColor: '#1e293b', border: 'none' }}
                 labelStyle={{ color: '#94a3b8' }}
@@ -256,25 +255,6 @@ export default function Dashboard() {
               <Legend
                 wrapperStyle={{ fontSize: '11px' }}
                 iconSize={10}
-              />
-              {/* Confidence interval area */}
-              <Area
-                type="monotone"
-                dataKey="upper"
-                stroke="none"
-                fill="#3b82f6"
-                fillOpacity={0.15}
-                name="95% CI"
-                yAxisId="ci"
-              />
-              <Area
-                type="monotone"
-                dataKey="lower"
-                stroke="none"
-                fill="#3b82f6"
-                fillOpacity={0.15}
-                legendType="none"
-                yAxisId="ci"
               />
               {/* Actual temperature line */}
               <Line
