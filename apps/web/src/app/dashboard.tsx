@@ -135,6 +135,8 @@ export default function Dashboard() {
     lastSeenText = `${hours} ${hours === 1 ? 'hour' : 'hours'} ago`;
     lastSeenColor = 'text-red-400';
   }
+  const chartTempMin = Math.min(...readings.map((r) => r.tempC)) - 1;
+  const chartTempMax = Math.max(...readings.map((r) => r.tempC)) + 1;
 
   // Prepare temperature data with forecasts
   const tempData: ChartPoint[] = readings.map((r) => ({
@@ -186,8 +188,6 @@ export default function Dashboard() {
   const pressMax = Math.max(...readings.map((r) => r.pressureHpa ?? 0));
   const vocMin = Math.min(...readings.map((r) => r.vocOhms ?? 0));
   const vocMax = Math.max(...readings.map((r) => r.vocOhms ?? 0));
-  const chartTempMin = Math.min(...readings.map((r) => r.tempC)) - 1;
-  const chartTempMax = Math.max(...readings.map((r) => r.tempC)) + 1;
 
   return (
     <div className="min-h-screen bg-slate-950 text-white p-8">
