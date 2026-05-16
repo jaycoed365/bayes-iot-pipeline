@@ -1,209 +1,370 @@
-"use client";
+'use client';
 
-import { useEffect, useState } from "react";
+import { useEffect, useState } from 'react';
 import {
   LineChart,
   Line,
   XAxis,
   YAxis,
+  CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  CartesianGrid,
-} from "recharts";
-import { formatDistanceToNowStrict } from "date-fns";
+  Area,
+  ComposedChart,
+  Legend,
+} from 'recharts';
 
-type Reading = {
+interface Reading {
   id: string;
   deviceUid: string;
-  capturedAt: string;
   tempC: number;
   humidity: number;
-  pressureHpa: number | null;
-  vocOhms: number | null;
-};
+  pressureHpa: number;
+  vocOhms: number;
+  capturedAt: string;
+}
 
-type ApiResponse = {
-  count: number;
+interface Forecast {
+  id: string;
+  targetAt: string;
+  tempC: number;
+  tempCLower: number;
+  tempCUpper: number;
+}
+
+interface ApiResponse {
   readings: Reading[];
-  generatedAt: string;
-};
+  totalCount: number;
+  returnedCount: number;
+}
 
-const REFRESH_MS = 10_000;
+interface ForecastResponse {
+  forecasts: Forecast[];
+  forecastedAt: string | null;
+  count: number;
+}
 
-const charts = [
-  { key: "tempC",       label: "Temperature",  unit: "°C",  color: "#f97316", fixed: 1 },
-  { key: "humidity",    label: "Humidity",     unit: "%",   color: "#3b82f6", fixed: 1 },
-  { key: "pressureHpa", label: "Pressure",     unit: "hPa", color: "#a855f7", fixed: 1 },
-  { key: "vocOhms",     label: "VOC gas",      unit: "Ω",   color: "#10b981", fixed: 0 },
-] as const;
-
-export function Dashboard() {
+export default function Dashboard() {
   const [data, setData] = useState<ApiResponse | null>(null);
+  const [forecasts, setForecasts] = useState<ForecastResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [tick, setTick] = useState(0);
+  const [loading, setLoading] = useState(true);
 
-  // Fetch loop
-  useEffect(() => {
-    let alive = true;
+  const fetchData = async () => {
+    try {
+      const [readingsRes, forecastsRes] = await Promise.all([
+        fetch('/api/readings?limit=50'),
+        fetch('/api/forecasts')
+      ]);
 
-    async function fetchData() {
-      try {
-        const res = await fetch("/api/readings?limit=50", { cache: "no-store" });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json: ApiResponse = await res.json();
-        if (alive) {
-          setData(json);
-          setError(null);
-        }
-      } catch (e: unknown) {
-        if (alive) setError(e instanceof Error ? e.message : "fetch failed");
+      if (!readingsRes.ok) throw new Error(`HTTP ${readingsRes.status}`);
+
+      const readingsJson = await readingsRes.json();
+      setData(readingsJson);
+
+      if (forecastsRes.ok) {
+        const forecastsJson = await forecastsRes.json();
+        setForecasts(forecastsJson);
       }
+
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load data');
+    } finally {
+      setLoading(false);
     }
+  };
 
-    fetchData();
-    const id = setInterval(fetchData, REFRESH_MS);
-    return () => {
-      alive = false;
-      clearInterval(id);
-    };
-  }, []);
-
-  // Re-render every second so "last seen" stays accurate
   useEffect(() => {
-    const id = setInterval(() => setTick((t) => t + 1), 1000);
-    return () => clearInterval(id);
+    fetchData();
+    const interval = setInterval(fetchData, 10000);
+    return () => clearInterval(interval);
   }, []);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+        <div className="text-slate-400">Loading...</div>
+      </div>
+    );
+  }
 
   if (error) {
     return (
-      <div className="rounded-lg border border-red-900/50 bg-red-950/30 p-6 text-red-300">
-        <div className="font-semibold">Failed to load data</div>
-        <div className="mt-1 font-mono text-sm">{error}</div>
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+        <div className="text-red-400">Failed to load data<br />HTTP {error}</div>
       </div>
     );
   }
 
-  if (!data) {
+  if (!data || data.readings.length === 0) {
     return (
-      <div className="rounded-lg border border-ink-700 bg-ink-900 p-6 text-zinc-400">
-        Loading…
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+        <div className="text-slate-400">No data available</div>
       </div>
     );
   }
 
-  if (data.readings.length === 0) {
-    return (
-      <div className="rounded-lg border border-ink-700 bg-ink-900 p-6">
-        <div className="font-semibold text-zinc-200">No readings yet</div>
-        <div className="mt-2 text-sm text-zinc-400">
-          Start the simulator with <code className="rounded bg-ink-800 px-1.5 py-0.5 font-mono text-xs">pnpm simulate</code> to see data flow in.
-        </div>
-      </div>
-    );
+  const readings = data.readings.reverse();
+  console.log('Readings:', readings.length, 'readings');
+  console.log('Latest:', readings[readings.length - 1]);
+  const latest = readings[readings.length - 1];
+  const lastSeenMs = new Date().getTime() - new Date(latest.capturedAt).getTime();
+  const lastSeenSeconds = Math.floor(lastSeenMs / 1000);
+
+  let lastSeenText = '';
+  let lastSeenColor = 'text-green-400';
+
+  if (lastSeenSeconds < 60) {
+    lastSeenText = `${lastSeenSeconds} seconds ago`;
+  } else if (lastSeenSeconds < 3600) {
+    const mins = Math.floor(lastSeenSeconds / 60);
+    lastSeenText = `${mins} ${mins === 1 ? 'minute' : 'minutes'} ago`;
+    lastSeenColor = lastSeenSeconds < 300 ? 'text-amber-400' : 'text-red-400';
+  } else {
+    const hours = Math.floor(lastSeenSeconds / 3600);
+    lastSeenText = `${hours} ${hours === 1 ? 'hour' : 'hours'} ago`;
+    lastSeenColor = 'text-red-400';
   }
 
-  const latest = data.readings[data.readings.length - 1];
-  const ageMs = Date.now() - new Date(latest.capturedAt).getTime();
-  const ageColor =
-    ageMs < 60_000 ? "text-emerald-400" :
-    ageMs < 5 * 60_000 ? "text-amber-400" :
-    "text-red-400";
+  // Prepare temperature data with forecasts
+  const tempData = readings.map((r) => ({
+    time: new Date(r.capturedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    timestamp: new Date(r.capturedAt).getTime(),
+    actual: r.tempC,
+    forecast: null,
+    lower: null,
+    upper: null,
+  }));
 
-  // Voiding "tick" usage - referenced to keep eslint quiet
-  void tick;
+  // Add forecast data
+  if (forecasts && forecasts.forecasts.length > 0) {
+    forecasts.forecasts.forEach((f) => {
+      tempData.push({
+        time: new Date(f.targetAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        timestamp: new Date(f.targetAt).getTime(),
+        actual: null,
+        forecast: f.tempC,
+        lower: f.tempCLower,
+        upper: f.tempCUpper,
+      });
+    });
+  }
+
+  // Sort by timestamp
+  tempData.sort((a, b) => a.timestamp - b.timestamp);
+
+  const humData = readings.map((r) => ({
+    time: new Date(r.capturedAt).toLocaleTimeString(),
+    value: r.humidity,
+  }));
+
+  const pressData = readings.map((r) => ({
+    time: new Date(r.capturedAt).toLocaleTimeString(),
+    value: r.pressureHpa,
+  }));
+
+  const vocData = readings.map((r) => ({
+    time: new Date(r.capturedAt).toLocaleTimeString(),
+    value: r.vocOhms,
+  }));
+
+  const tempMin = Math.min(...readings.map((r) => r.tempC));
+  const tempMax = Math.max(...readings.map((r) => r.tempC));
+  const humMin = Math.min(...readings.map((r) => r.humidity));
+  const humMax = Math.max(...readings.map((r) => r.humidity));
+  const pressMin = Math.min(...readings.map((r) => r.pressureHpa));
+  const pressMax = Math.max(...readings.map((r) => r.pressureHpa));
+  const vocMin = Math.min(...readings.map((r) => r.vocOhms));
+  const vocMax = Math.max(...readings.map((r) => r.vocOhms));
 
   return (
-    <div className="space-y-6">
-      {/* Status bar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-ink-700 bg-ink-900 p-4">
-        <div className="flex items-center gap-3">
-          <span className={`h-2.5 w-2.5 rounded-full ${ageMs < 60_000 ? "bg-emerald-400 animate-pulse" : "bg-zinc-600"}`} />
-          <span className="text-sm text-zinc-400">
-            {data.readings.length} readings · device <span className="font-mono text-zinc-300">{latest.deviceUid}</span>
-          </span>
+    <div className="min-h-screen bg-slate-950 text-white p-8">
+      {/* Header */}
+      <div className="mb-8">
+        <h1 className="text-4xl font-bold mb-2">bayes-iot</h1>
+        <p className="text-slate-400">Real-time IoT pipeline · Bayesian time-series forecasting</p>
+        <a
+          href="https://github.com/jaycoed365/bayes-iot-pipeline"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-blue-400 hover:text-blue-300 text-sm"
+        >
+          github.com/jaycoed365/bayes-iot-pipeline →
+        </a>
+      </div>
+
+      {/* Status Bar */}
+      <div className="mb-6 flex items-center gap-6 text-sm">
+        <div className="text-slate-300">
+          <span className="text-slate-500">●</span> {data.totalCount} readings · device {latest.deviceUid}
         </div>
-        <div className="flex items-center gap-4 text-sm">
-          <span className="text-zinc-500">last reading</span>
-          <span className={`font-mono ${ageColor}`}>
-            {formatDistanceToNowStrict(new Date(latest.capturedAt), { addSuffix: true })}
-          </span>
+        <div className={`${lastSeenColor}`}>
+          last reading {lastSeenText}
+        </div>
+        {forecasts && forecasts.count > 0 && (
+          <div className="text-blue-400">
+            {forecasts.count} forecasts · Prophet baseline
+          </div>
+        )}
+      </div>
+
+      {/* Charts Grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Temperature with Forecast */}
+        <div className="bg-slate-900 rounded-lg p-6">
+          <div className="mb-4">
+            <h3 className="text-sm text-slate-400 uppercase tracking-wide">Temperature + Forecast</h3>
+            <div className="text-3xl font-bold text-orange-400">
+              {latest.tempC.toFixed(1)}°C
+              <span className="text-xl text-slate-500 ml-2">
+                ({(latest.tempC * 9 / 5 + 32).toFixed(1)}°F)
+              </span>
+            </div>
+            <div className="text-xs text-slate-500 mt-1">
+              min {tempMin.toFixed(1)}°C ({(tempMin * 9 / 5 + 32).toFixed(1)}°F) ·
+              max {tempMax.toFixed(1)}°C ({(tempMax * 9 / 5 + 32).toFixed(1)}°F)
+            </div>
+          </div>
+          <ResponsiveContainer width="100%" height={200}>
+            <ComposedChart data={tempData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+              <XAxis
+                dataKey="time"
+                stroke="#64748b"
+                fontSize={10}
+                interval="preserveStartEnd"
+                tick={{ fontSize: 9 }}
+              />
+              <YAxis stroke="#64748b" fontSize={10} domain={['dataMin - 1', 'dataMax + 1']} />
+              <Tooltip
+                contentStyle={{ backgroundColor: '#1e293b', border: 'none' }}
+                labelStyle={{ color: '#94a3b8' }}
+              />
+              <Legend
+                wrapperStyle={{ fontSize: '11px' }}
+                iconSize={10}
+              />
+              {/* Confidence interval area */}
+              <Area
+                type="monotone"
+                dataKey="upper"
+                stroke="none"
+                fill="#3b82f6"
+                fillOpacity={0.15}
+                name="95% CI"
+              />
+              <Area
+                type="monotone"
+                dataKey="lower"
+                stroke="none"
+                fill="#3b82f6"
+                fillOpacity={0.15}
+              />
+              {/* Actual temperature line */}
+              <Line
+                type="monotone"
+                dataKey="actual"
+                stroke="#fb923c"
+                strokeWidth={2}
+                dot={false}
+                name="Actual"
+                connectNulls={false}
+              />
+              {/* Forecast line */}
+              <Line
+                type="monotone"
+                dataKey="forecast"
+                stroke="#3b82f6"
+                strokeWidth={2}
+                strokeDasharray="5 5"
+                dot={false}
+                name="Forecast"
+                connectNulls
+              />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Humidity */}
+        <div className="bg-slate-900 rounded-lg p-6">
+          <div className="mb-4">
+            <h3 className="text-sm text-slate-400 uppercase tracking-wide">Humidity</h3>
+            <div className="text-3xl font-bold text-blue-400">
+              {latest.humidity.toFixed(1)}%
+            </div>
+            <div className="text-xs text-slate-500 mt-1">
+              min {humMin.toFixed(1)} · max {humMax.toFixed(1)}
+            </div>
+          </div>
+          <ResponsiveContainer width="100%" height={200}>
+            <LineChart data={humData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+              <XAxis dataKey="time" stroke="#64748b" fontSize={10} />
+              <YAxis stroke="#64748b" fontSize={10} domain={['dataMin - 2', 'dataMax + 2']} />
+              <Tooltip
+                contentStyle={{ backgroundColor: '#1e293b', border: 'none' }}
+                labelStyle={{ color: '#94a3b8' }}
+              />
+              <Line type="monotone" dataKey="value" stroke="#60a5fa" strokeWidth={2} dot={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Pressure */}
+        <div className="bg-slate-900 rounded-lg p-6">
+          <div className="mb-4">
+            <h3 className="text-sm text-slate-400 uppercase tracking-wide">Pressure</h3>
+            <div className="text-3xl font-bold text-purple-400">
+              {latest.pressureHpa.toFixed(1)} hPa
+            </div>
+            <div className="text-xs text-slate-500 mt-1">
+              min {pressMin.toFixed(1)} · max {pressMax.toFixed(1)}
+            </div>
+          </div>
+          <ResponsiveContainer width="100%" height={200}>
+            <LineChart data={pressData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+              <XAxis dataKey="time" stroke="#64748b" fontSize={10} />
+              <YAxis stroke="#64748b" fontSize={10} domain={['dataMin - 0.5', 'dataMax + 0.5']} />
+              <Tooltip
+                contentStyle={{ backgroundColor: '#1e293b', border: 'none' }}
+                labelStyle={{ color: '#94a3b8' }}
+              />
+              <Line type="monotone" dataKey="value" stroke="#c084fc" strokeWidth={2} dot={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* VOC Gas */}
+        <div className="bg-slate-900 rounded-lg p-6">
+          <div className="mb-4">
+            <h3 className="text-sm text-slate-400 uppercase tracking-wide">VOC Gas</h3>
+            <div className="text-3xl font-bold text-green-400">
+              {latest.vocOhms.toFixed(0)} Ω
+            </div>
+            <div className="text-xs text-slate-500 mt-1">
+              min {vocMin.toFixed(0)} · max {vocMax.toFixed(0)}
+            </div>
+          </div>
+          <ResponsiveContainer width="100%" height={200}>
+            <LineChart data={vocData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+              <XAxis dataKey="time" stroke="#64748b" fontSize={10} />
+              <YAxis stroke="#64748b" fontSize={10} />
+              <Tooltip
+                contentStyle={{ backgroundColor: '#1e293b', border: 'none' }}
+                labelStyle={{ color: '#94a3b8' }}
+              />
+              <Line type="monotone" dataKey="value" stroke="#4ade80" strokeWidth={2} dot={false} />
+            </LineChart>
+          </ResponsiveContainer>
         </div>
       </div>
 
-      {/* Charts grid */}
-      <div className="grid gap-4 md:grid-cols-2">
-        {charts.map((c) => {
-          const series = data.readings.map((r) => ({
-            t: new Date(r.capturedAt).getTime(),
-            v: (r as Reading)[c.key as keyof Reading] as number | null,
-          }));
-          const values = series.map((s) => s.v).filter((v): v is number => v != null);
-          const current = values.length ? values[values.length - 1] : null;
-          const min = values.length ? Math.min(...values) : null;
-          const max = values.length ? Math.max(...values) : null;
-
-          return (
-            <div key={c.key} className="rounded-lg border border-ink-700 bg-ink-900 p-4">
-              <div className="mb-3 flex items-baseline justify-between">
-                <div>
-                  <div className="text-sm uppercase tracking-wider text-zinc-500">{c.label}</div>
-                  <div className="mt-1 font-mono text-3xl" style={{ color: c.color }}>
-                    {current != null ? current.toFixed(c.fixed) : "—"}
-                    <span className="ml-1 text-sm text-zinc-500">{c.unit}</span>
-                  </div>
-                </div>
-                <div className="text-right text-xs text-zinc-500">
-                  <div>min {min != null ? min.toFixed(c.fixed) : "—"}</div>
-                  <div>max {max != null ? max.toFixed(c.fixed) : "—"}</div>
-                </div>
-              </div>
-              <div className="h-44">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={series} margin={{ top: 5, right: 8, bottom: 0, left: 0 }}>
-                    <CartesianGrid stroke="#262934" strokeDasharray="3 3" vertical={false} />
-                    <XAxis
-                      dataKey="t"
-                      type="number"
-                      domain={["dataMin", "dataMax"]}
-                      tickFormatter={(t) => {
-                        const d = new Date(t);
-                        return `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
-                      }}
-                      stroke="#3a3e4d"
-                      fontSize={11}
-                      tickLine={false}
-                    />
-                    <YAxis
-                      stroke="#3a3e4d"
-                      fontSize={11}
-                      tickLine={false}
-                      width={40}
-                      domain={["dataMin - 1", "dataMax + 1"]}
-                    />
-                    <Tooltip
-                      contentStyle={{
-                        background: "#11121a",
-                        border: "1px solid #262934",
-                        borderRadius: 6,
-                        fontSize: 12,
-                      }}
-                      labelFormatter={(t) => new Date(t as number).toLocaleString()}
-                      formatter={(value: number) => [`${value.toFixed(c.fixed)} ${c.unit}`, c.label]}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="v"
-                      stroke={c.color}
-                      strokeWidth={2}
-                      dot={false}
-                      isAnimationActive={false}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-          );
-        })}
+      {/* Footer */}
+      <div className="mt-8 text-center text-xs text-slate-500">
+        auto-refresh every 10s · data from Neon Postgres · built with Next.js + Prisma + Recharts + Prophet
       </div>
     </div>
   );
