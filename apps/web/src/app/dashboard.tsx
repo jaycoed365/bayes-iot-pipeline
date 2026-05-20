@@ -138,6 +138,40 @@ export default function Dashboard() {
   const chartTempMin = Math.min(...readings.map((r) => r.tempC)) - 1;
   const chartTempMax = Math.max(...readings.map((r) => r.tempC)) + 1;
 
+  // Heat Index (NOAA Rothfusz regression, °C)
+const calcHeatIndex = (tC: number, rh: number) => {
+  const tF = tC * 9/5 + 32;
+  if (tF < 80) return tC;
+  const hiF = -42.379 + 2.04901523*tF + 10.14333127*rh 
+    - 0.22475541*tF*rh - 0.00683783*tF*tF - 0.05481717*rh*rh 
+    + 0.00122874*tF*tF*rh + 0.00085282*tF*rh*rh - 0.00000199*tF*tF*rh*rh;
+  return (hiF - 32) * 5/9;
+};
+
+// Dew Point (Magnus formula, °C)
+const calcDewPoint = (tC: number, rh: number) => {
+  const a = 17.27, b = 237.7;
+  const alpha = (a * tC) / (b + tC) + Math.log(rh / 100);
+  return (b * alpha) / (a - alpha);
+};
+
+const heatIndexData = readings.map((r) => ({
+  time: new Date(r.capturedAt).toLocaleTimeString(),
+  value: calcHeatIndex(r.tempC, r.humidity),
+}));
+
+const dewPointData = readings.map((r) => ({
+  time: new Date(r.capturedAt).toLocaleTimeString(),
+  value: calcDewPoint(r.tempC, r.humidity),
+}));
+
+const latestHeatIndex = calcHeatIndex(latest.tempC, latest.humidity);
+const latestDewPoint = calcDewPoint(latest.tempC, latest.humidity);
+const hiMin = Math.min(...heatIndexData.map(d => d.value));
+const hiMax = Math.max(...heatIndexData.map(d => d.value));
+const dpMin = Math.min(...dewPointData.map(d => d.value));
+const dpMax = Math.max(...dewPointData.map(d => d.value));
+
   // Prepare temperature data with forecasts
   const tempData: ChartPoint[] = readings.map((r) => ({
     time: new Date(r.capturedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -306,56 +340,61 @@ export default function Dashboard() {
             </LineChart>
           </ResponsiveContainer>
         </div>
+{/* Heat Index */}
+<div className="bg-slate-900 rounded-lg p-6">
+  <div className="mb-4">
+    <h3 className="text-sm text-slate-400 uppercase tracking-wide">Heat Index</h3>
+    <div className="text-3xl font-bold text-red-400">
+      {latestHeatIndex.toFixed(1)}°C
+      <span className="text-xl text-slate-500 ml-2">
+        ({(latestHeatIndex * 9/5 + 32).toFixed(1)}°F)
+      </span>
+    </div>
+    <div className="text-xs text-slate-500 mt-1">
+      "feels like" · min {hiMin.toFixed(1)}°C · max {hiMax.toFixed(1)}°C
+    </div>
+  </div>
+  <ResponsiveContainer width="100%" height={200}>
+    <LineChart data={heatIndexData}>
+      <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+      <XAxis dataKey="time" stroke="#64748b" fontSize={10} />
+      <YAxis stroke="#64748b" fontSize={10} domain={['dataMin - 1', 'dataMax + 1']} />
+      <Tooltip
+        contentStyle={{ backgroundColor: '#1e293b', border: 'none' }}
+        labelStyle={{ color: '#94a3b8' }}
+      />
+      <Line type="monotone" dataKey="value" stroke="#f87171" strokeWidth={2} dot={false} />
+    </LineChart>
+  </ResponsiveContainer>
+</div>
 
-        {/* Pressure */}
-        <div className="bg-slate-900 rounded-lg p-6">
-          <div className="mb-4">
-            <h3 className="text-sm text-slate-400 uppercase tracking-wide">Pressure</h3>
-            <div className="text-3xl font-bold text-purple-400">
-              {latest.pressureHpa?.toFixed(1) ?? 'N/A'} hPa
-            </div>
-            <div className="text-xs text-slate-500 mt-1">
-              min {pressMin.toFixed(1)} · max {pressMax.toFixed(1)}
-            </div>
-          </div>
-          <ResponsiveContainer width="100%" height={200}>
-            <LineChart data={pressData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-              <XAxis dataKey="time" stroke="#64748b" fontSize={10} />
-              <YAxis stroke="#64748b" fontSize={10} domain={['dataMin - 0.5', 'dataMax + 0.5']} />
-              <Tooltip
-                contentStyle={{ backgroundColor: '#1e293b', border: 'none' }}
-                labelStyle={{ color: '#94a3b8' }}
-              />
-              <Line type="monotone" dataKey="value" stroke="#c084fc" strokeWidth={2} dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-
-        {/* VOC Gas */}
-        <div className="bg-slate-900 rounded-lg p-6">
-          <div className="mb-4">
-            <h3 className="text-sm text-slate-400 uppercase tracking-wide">VOC Gas</h3>
-            <div className="text-3xl font-bold text-green-400">
-              {latest.vocOhms?.toFixed(0) ?? 'N/A'} Ω
-            </div>
-            <div className="text-xs text-slate-500 mt-1">
-              min {vocMin.toFixed(0)} · max {vocMax.toFixed(0)}
-            </div>
-          </div>
-          <ResponsiveContainer width="100%" height={200}>
-            <LineChart data={vocData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-              <XAxis dataKey="time" stroke="#64748b" fontSize={10} />
-              <YAxis stroke="#64748b" fontSize={10} />
-              <Tooltip
-                contentStyle={{ backgroundColor: '#1e293b', border: 'none' }}
-                labelStyle={{ color: '#94a3b8' }}
-              />
-              <Line type="monotone" dataKey="value" stroke="#4ade80" strokeWidth={2} dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
+{/* Dew Point */}
+<div className="bg-slate-900 rounded-lg p-6">
+  <div className="mb-4">
+    <h3 className="text-sm text-slate-400 uppercase tracking-wide">Dew Point</h3>
+    <div className="text-3xl font-bold text-cyan-400">
+      {latestDewPoint.toFixed(1)}°C
+      <span className="text-xl text-slate-500 ml-2">
+        ({(latestDewPoint * 9/5 + 32).toFixed(1)}°F)
+      </span>
+    </div>
+    <div className="text-xs text-slate-500 mt-1">
+      min {dpMin.toFixed(1)}°C · max {dpMax.toFixed(1)}°C
+    </div>
+  </div>
+  <ResponsiveContainer width="100%" height={200}>
+    <LineChart data={dewPointData}>
+      <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+      <XAxis dataKey="time" stroke="#64748b" fontSize={10} />
+      <YAxis stroke="#64748b" fontSize={10} domain={['dataMin - 1', 'dataMax + 1']} />
+      <Tooltip
+        contentStyle={{ backgroundColor: '#1e293b', border: 'none' }}
+        labelStyle={{ color: '#94a3b8' }}
+      />
+      <Line type="monotone" dataKey="value" stroke="#22d3ee" strokeWidth={2} dot={false} />
+    </LineChart>
+  </ResponsiveContainer>
+</div>
       </div>
 
       {/* Footer */}
