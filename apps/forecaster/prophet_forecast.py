@@ -15,18 +15,24 @@ import uuid
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
+# Train only on the real Swan/Notecard (not the simulator or test rows),
+# and only on recent data so the months-long gap before Oct/Nov doesn't skew the trend.
+DEVICE_UID = os.getenv("DEVICE_UID", "dev:351077454469720")
+LOOKBACK_DAYS = int(os.getenv("LOOKBACK_DAYS", "7"))
 
 def fetch_readings():
     """Fetch all environmental readings from Neon Postgres"""
     conn = psycopg2.connect(DATABASE_URL)
     
-    query = query = """
+    query = """
         SELECT id, "deviceUid", "tempC", humidity, "pressureHpa", "vocOhms", "capturedAt"
         FROM "EnvReading"
+        WHERE "deviceUid" = %(device)s
+          AND "capturedAt" >= NOW() - (%(days)s * INTERVAL '1 day')
         ORDER BY "capturedAt" ASC
     """
     
-    df = pd.read_sql(query, conn)
+    df = pd.read_sql(query, conn, params={"device": DEVICE_UID, "days": LOOKBACK_DAYS})
     conn.close()
 
     # Rename columns to match expected format
@@ -38,7 +44,7 @@ def fetch_readings():
         'capturedAt': 'createdAt'
     })
     
-    print(f"✓ Fetched {len(df)} readings from database")
+    print(f"✓ Fetched {len(df)} readings for {DEVICE_UID} (last {LOOKBACK_DAYS} days)")
     return df
 
 def prepare_prophet_data(df, column='temperature'):
@@ -105,7 +111,7 @@ def save_forecasts_to_db(forecast_df, model_name='prophet_baseline'):
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             forecast_id,           # unique ID
-            'dev:simulator-001',   # device identifier
+            DEVICE_UID,            # device identifier
             model_name,            # 'prophet_baseline'
             model_version,         # '1.3.0'
             forecast_made_at,      # when we made this forecast

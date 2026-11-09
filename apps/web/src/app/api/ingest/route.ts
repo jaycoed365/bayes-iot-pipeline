@@ -37,6 +37,8 @@ export async function POST(request: NextRequest) {
         humidity: sensorData.humidity_pct || sensorData.humidity || 0,
         pressureHpa: sensorData.pressure || null,
         vocOhms: sensorData.voc || null,
+        // DS18B20 probe; typeof check so a real 0 °C reading is kept
+        probeTempC: typeof sensorData.probe_temp_c === 'number' ? sensorData.probe_temp_c : null,
       },
     });
 
@@ -48,6 +50,7 @@ export async function POST(request: NextRequest) {
       deviceUid,
       tempC: reading.tempC,
       humidity: reading.humidity,
+      probeTempC: reading.probeTempC,
     });
 
   } catch (error) {

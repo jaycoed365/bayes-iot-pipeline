@@ -6,3 +6,6 @@ dist
 *.log
 .DS_Store
 .vercel
+
+# Claude Code handoff notes (local only)
+CLAUDE.md

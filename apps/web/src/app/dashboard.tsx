@@ -21,6 +21,7 @@ interface Reading {
   humidity: number;
   pressureHpa: number | null;
   vocOhms: number | null;
+  probeTempC: number | null;
   capturedAt: string;
 }
 
@@ -36,6 +37,7 @@ interface ChartPoint {
   time: string;
   timestamp: number;
   actual: number | null;
+  probe: number | null;
   forecast: number | null;
   lower: number | null;
   upper: number | null;
@@ -43,8 +45,8 @@ interface ChartPoint {
 
 interface ApiResponse {
   readings: Reading[];
-  totalCount: number;
-  returnedCount: number;
+  count: number;
+  generatedAt: string;
 }
 
 interface ForecastResponse {
@@ -114,9 +116,8 @@ export default function Dashboard() {
     );
   }
 
-  const readings = data.readings.reverse();
-  console.log('Readings:', readings.length, 'readings');
-  console.log('Latest:', readings[readings.length - 1]);
+  // API already returns chronological order (oldest first), so the newest reading is last
+  const readings = data.readings;
   const latest = readings[readings.length - 1];
   const lastSeenMs = new Date().getTime() - new Date(latest.capturedAt).getTime();
   const lastSeenSeconds = Math.floor(lastSeenMs / 1000);
@@ -135,8 +136,14 @@ export default function Dashboard() {
     lastSeenText = `${hours} ${hours === 1 ? 'hour' : 'hours'} ago`;
     lastSeenColor = 'text-red-400';
   }
-  const chartTempMin = Math.min(...readings.map((r) => r.tempC)) - 1;
-  const chartTempMax = Math.max(...readings.map((r) => r.tempC)) + 1;
+  // Y-axis range covers both sensors (older readings have no probe value)
+  const probeValues = readings
+    .map((r) => r.probeTempC)
+    .filter((v): v is number => v !== null && v !== undefined);
+  const allTemps = [...readings.map((r) => r.tempC), ...probeValues];
+  const chartTempMin = Math.min(...allTemps) - 1;
+  const chartTempMax = Math.max(...allTemps) + 1;
+  const latestProbe = latest.probeTempC ?? null;
 
   // Heat Index (NOAA Rothfusz regression, °C)
 const calcHeatIndex = (tC: number, rh: number) => {
@@ -177,6 +184,7 @@ const dpMax = Math.max(...dewPointData.map(d => d.value));
     time: new Date(r.capturedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     timestamp: new Date(r.capturedAt).getTime(),
     actual: r.tempC,
+    probe: r.probeTempC ?? null,
     forecast: null,
     lower: null,
     upper: null,
@@ -185,11 +193,13 @@ const dpMax = Math.max(...dewPointData.map(d => d.value));
   // Add forecast data
   if (forecasts && forecasts.forecasts.length > 0) {
     forecasts.forecasts.forEach((f) => {
+      if (new Date(f.targetAt).getTime() < new Date(latest.capturedAt).getTime()) return;
       if (f.tempC === null || f.tempC < -50 || f.tempC > 60) return; // skip unreasonable numbers
       tempData.push({
         time: new Date(f.targetAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         timestamp: new Date(f.targetAt).getTime(),
         actual: null,
+        probe: null,
         forecast: f.tempC,
         lower: null,
         upper: null,
@@ -243,7 +253,7 @@ const dpMax = Math.max(...dewPointData.map(d => d.value));
       {/* Status Bar */}
       <div className="mb-6 flex items-center gap-6 text-sm">
         <div className="text-slate-300">
-          <span className="text-slate-500">●</span> {data.totalCount} readings · device {latest.deviceUid}
+          <span className="text-slate-500">●</span> {data.readings.length} readings · device {latest.deviceUid}
         </div>
         <div className={`${lastSeenColor}`}>
           last reading {lastSeenText}
@@ -267,6 +277,12 @@ const dpMax = Math.max(...dewPointData.map(d => d.value));
                 ({(latest.tempC * 9 / 5 + 32).toFixed(1)}°F)
               </span>
             </div>
+            {latestProbe !== null && (
+              <div className="text-lg font-semibold text-purple-400">
+                probe {latestProbe.toFixed(1)}°C
+                <span className="text-slate-500 ml-2">({(latestProbe * 9 / 5 + 32).toFixed(1)}°F)</span>
+              </div>
+            )}
             <div className="text-xs text-slate-500 mt-1">
               min {tempMin.toFixed(1)}°C ({(tempMin * 9 / 5 + 32).toFixed(1)}°F) ·
               max {tempMax.toFixed(1)}°C ({(tempMax * 9 / 5 + 32).toFixed(1)}°F)
@@ -282,7 +298,7 @@ const dpMax = Math.max(...dewPointData.map(d => d.value));
                 interval="preserveStartEnd"
                 tick={{ fontSize: 9 }}
               />
-              <YAxis stroke="#64748b" fontSize={10} domain={[chartTempMin, chartTempMax]} />
+              <YAxis stroke="#64748b" fontSize={10} domain={[chartTempMin, chartTempMax]} tickFormatter={(v: number) => v.toFixed(1)} />
               <Tooltip
                 contentStyle={{ backgroundColor: '#1e293b', border: 'none' }}
                 labelStyle={{ color: '#94a3b8' }}
@@ -298,9 +314,21 @@ const dpMax = Math.max(...dewPointData.map(d => d.value));
                 stroke="#fb923c"
                 strokeWidth={2}
                 dot={false}
-                name="Actual"
+                name="DHT11"
                 connectNulls={false}
               />
+              {/* DS18B20 probe line (only drawn where readings have a probe value) */}
+              {probeValues.length > 0 && (
+                <Line
+                  type="monotone"
+                  dataKey="probe"
+                  stroke="#c084fc"
+                  strokeWidth={2}
+                  dot={false}
+                  name="Probe (DS18B20)"
+                  connectNulls={false}
+                />
+              )}
               {/* Forecast line */}
               <Line
                 type="monotone"
@@ -331,7 +359,7 @@ const dpMax = Math.max(...dewPointData.map(d => d.value));
             <LineChart data={humData}>
               <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
               <XAxis dataKey="time" stroke="#64748b" fontSize={10} />
-              <YAxis stroke="#64748b" fontSize={10} domain={['dataMin - 2', 'dataMax + 2']} />
+              <YAxis stroke="#64748b" fontSize={10} domain={['dataMin - 2', 'dataMax + 2']} tickFormatter={(v: number) => v.toFixed(1)} />
               <Tooltip
                 contentStyle={{ backgroundColor: '#1e293b', border: 'none' }}
                 labelStyle={{ color: '#94a3b8' }}
@@ -358,7 +386,7 @@ const dpMax = Math.max(...dewPointData.map(d => d.value));
     <LineChart data={heatIndexData}>
       <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
       <XAxis dataKey="time" stroke="#64748b" fontSize={10} />
-      <YAxis stroke="#64748b" fontSize={10} domain={['dataMin - 1', 'dataMax + 1']} />
+      <YAxis stroke="#64748b" fontSize={10} domain={['dataMin - 1', 'dataMax + 1']} tickFormatter={(v: number) => v.toFixed(1)} />
       <Tooltip
         contentStyle={{ backgroundColor: '#1e293b', border: 'none' }}
         labelStyle={{ color: '#94a3b8' }}
@@ -386,7 +414,7 @@ const dpMax = Math.max(...dewPointData.map(d => d.value));
     <LineChart data={dewPointData}>
       <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
       <XAxis dataKey="time" stroke="#64748b" fontSize={10} />
-      <YAxis stroke="#64748b" fontSize={10} domain={['dataMin - 1', 'dataMax + 1']} />
+      <YAxis stroke="#64748b" fontSize={10} domain={['dataMin - 1', 'dataMax + 1']} tickFormatter={(v: number) => v.toFixed(1)} />
       <Tooltip
         contentStyle={{ backgroundColor: '#1e293b', border: 'none' }}
         labelStyle={{ color: '#94a3b8' }}
