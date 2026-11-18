@@ -25,7 +25,8 @@ interface NodeData {
   deviceUid: string;
   label: string;
   site: string;
-  readings: Reading[];
+  lastSeen: string | null; // newest reading ever, even outside the window
+  readings: Reading[]; // readings inside the window only
 }
 
 interface Forecast {
@@ -115,6 +116,9 @@ function lastSeen(iso: string | undefined) {
 
 const tooltipStyle = { backgroundColor: '#1e293b', border: 'none', fontSize: 12 };
 
+// Live charts cover this many hours; older readings stay in the database
+const LIVE_WINDOW_HOURS = 12;
+
 // ---------------------------------------------------------------- component
 
 export default function Dashboard() {
@@ -127,7 +131,7 @@ export default function Dashboard() {
     const loadLive = async () => {
       try {
         const [nodesRes, fcRes] = await Promise.all([
-          fetch('/api/nodes?limit=120'),
+          fetch(`/api/nodes?hours=${LIVE_WINDOW_HOURS}&limit=${LIVE_WINDOW_HOURS * 60}`),
           fetch('/api/forecasts'),
         ]);
         if (!nodesRes.ok) throw new Error(`HTTP ${nodesRes.status}`);
@@ -313,7 +317,7 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
         {nodes.map((n, i) => {
           const r = n.readings[n.readings.length - 1];
-          const seen = lastSeen(r?.capturedAt);
+          const seen = lastSeen(n.lastSeen ?? r?.capturedAt);
           const color = NODE_COLORS[i % NODE_COLORS.length];
           return (
             <div key={n.deviceUid} className="bg-slate-900 rounded-lg p-6" style={{ borderTop: `4px solid ${color}` }}>
@@ -322,6 +326,9 @@ export default function Dashboard() {
                 <span className={`text-sm ${seen.color}`}>last reading {seen.text}</span>
               </div>
               <p className="text-xs text-slate-500 mb-4">{n.site} · {n.deviceUid}</p>
+              {!r && (
+                <p className="text-sm text-amber-400 mb-3">No readings in the last {LIVE_WINDOW_HOURS} hours</p>
+              )}
               <div className="grid grid-cols-3 gap-4">
                 <div>
                   <div className="text-xs text-slate-400 uppercase">Water</div>
