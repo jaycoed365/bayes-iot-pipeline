@@ -32,6 +32,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Reject values a DHT11 cannot physically report (corrupted reads can
+    // slip through its checksum as near-zero temperature and 0 % humidity)
+    if (humidity < 5 || humidity > 100 || tempC < -10 || tempC > 60) {
+      return NextResponse.json(
+        { error: 'Implausible DHT11 reading rejected', tempC, humidity },
+        { status: 422 }
+      );
+    }
+
     const reading = await prisma.envReading.create({
       data: {
         deviceUid,
