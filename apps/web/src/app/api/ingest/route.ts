@@ -4,45 +4,62 @@ import { prisma } from '@/lib/prisma';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
+const num = (v: unknown): number | null =>
+  typeof v === 'number' && Number.isFinite(v) ? v : null;
+
 // POST /api/ingest
-// Receives data from Blues Notehub webhook
+// Receives one Notehub event per reading. Each sensor node (Swan + Notecard)
+// sends a dht11.qo note: { temperature_c, humidity_pct, probe_temp_c? }.
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
+    const event = await request.json();
+    console.log('Received webhook:', JSON.stringify(event));
 
-    // Blues Notehub sends data in this format:
-    // { event: "...", body: { temp: 22.5, humidity: 55.2, ... } }
+    // Notehub device UID, e.g. "dev:351077454469720"
+    const deviceUid: string = event.device || event.deviceUID || 'dev:notecard-001';
+    const sensorData = event.body || event;
 
-    console.log('Received webhook:', JSON.stringify(body, null, 2));
+    // Notehub sends the capture time as a Unix timestamp in seconds
+    const capturedAt = event.when ? new Date(event.when * 1000) : new Date();
 
-    // Extract device ID from Notehub event
-    const deviceUid = body.device || body.deviceUID || 'dev:notecard-001';
+    // Accept both the firmware's names and the simulator's names
+    const tempC = num(sensorData.temperature_c) ?? num(sensorData.temp) ?? num(sensorData.temperature);
+    const humidity = num(sensorData.humidity_pct) ?? num(sensorData.humidity);
+    if (tempC === null || humidity === null) {
+      return NextResponse.json(
+        { error: 'Missing temperature_c or humidity_pct in note body' },
+        { status: 400 }
+      );
+    }
 
-    // Extract sensor data from body
-    const sensorData = body.body || body;
-
-    // Parse timestamps
-    const capturedAt = body.when
-      ? new Date(body.when * 1000) // Notehub sends Unix timestamp
-      : new Date();
-
-    // Create reading in database
     const reading = await prisma.envReading.create({
       data: {
         deviceUid,
         capturedAt,
         ingestedAt: new Date(),
         receivedAt: new Date(),
-        tempC: sensorData.temperature_c || sensorData.temp || sensorData.temperature || 0,
-        humidity: sensorData.humidity_pct || sensorData.humidity || 0,
-        pressureHpa: sensorData.pressure || null,
-        vocOhms: sensorData.voc || null,
-        // DS18B20 probe; typeof check so a real 0 °C reading is kept
-        probeTempC: typeof sensorData.probe_temp_c === 'number' ? sensorData.probe_temp_c : null,
+        tempC,
+        humidity,
+        pressureHpa: num(sensorData.pressure),
+        vocOhms: num(sensorData.voc),
+        probeTempC: num(sensorData.probe_temp_c), // DS18B20 water probe
       },
     });
 
-    console.log('✓ Created reading:', reading.id);
+    // Register the node the first time it posts. If the device has a serial
+    // number set in Notehub (Devices -> device -> Settings), it becomes the
+    // label shown on the dashboard, e.g. "Ice cup".
+    const sn = typeof event.sn === 'string' && event.sn.trim() ? event.sn.trim().slice(0, 60) : null;
+    try {
+      await prisma.device.upsert({
+        where: { deviceUid },
+        create: { deviceUid, label: sn ?? `Node ${deviceUid.slice(-4)}`, sortOrder: 50 },
+        update: sn ? { label: sn } : {},
+      });
+    } catch (e) {
+      // Never lose a reading because of the device registry
+      console.error('Device upsert failed:', e);
+    }
 
     return NextResponse.json({
       success: true,
@@ -52,21 +69,19 @@ export async function POST(request: NextRequest) {
       humidity: reading.humidity,
       probeTempC: reading.probeTempC,
     });
-
   } catch (error) {
     console.error('Ingest error:', error);
     return NextResponse.json(
       {
         error: 'Failed to ingest data',
-        message: error instanceof Error ? error.message : 'Unknown error'
+        message: error instanceof Error ? error.message : 'Unknown error',
       },
       { status: 500 }
     );
   }
 }
 
-// GET /api/ingest
-// Health check endpoint
+// GET /api/ingest — health check
 export async function GET() {
   return NextResponse.json({
     status: 'healthy',

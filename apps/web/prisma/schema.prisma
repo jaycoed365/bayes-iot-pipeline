@@ -66,3 +66,15 @@ model Anomaly {
 
   @@index([deviceUid, detectedAt])
 }
+
+// A sensor node (one Swan + Notecard). Labels and sites drive the
+// node -> site rollup on the dashboard. Rows are created automatically
+// the first time a device posts; the label follows the Notehub serial
+// number ("sn") when one is set for the device.
+model Device {
+  deviceUid String   @id
+  label     String
+  site      String   @default("Lab bench")
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+}

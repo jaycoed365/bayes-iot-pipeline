@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   LineChart,
   Line,
@@ -9,90 +9,234 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  Area,
-  ComposedChart,
   Legend,
 } from 'recharts';
 
+// ---------------------------------------------------------------- types
+
 interface Reading {
-  id: string;
-  deviceUid: string;
-  tempC: number;
-  humidity: number;
-  pressureHpa: number | null;
-  vocOhms: number | null;
-  probeTempC: number | null;
   capturedAt: string;
+  tempC: number; // DHT11 air temperature
+  humidity: number; // DHT11 relative humidity
+  probeTempC: number | null; // DS18B20 water temperature
+}
+
+interface NodeData {
+  deviceUid: string;
+  label: string;
+  site: string;
+  readings: Reading[];
 }
 
 interface Forecast {
   id: string;
   targetAt: string;
   tempC: number | null;
-  tempCLower: number | null;
-  tempCUpper: number | null;
 }
 
-interface ChartPoint {
-  time: string;
-  timestamp: number;
-  actual: number | null;
-  probe: number | null;
-  forecast: number | null;
-  lower: number | null;
-  upper: number | null;
+interface NodeSummary {
+  deviceUid: string; label: string; site: string; n: number; lastSeen: string | null;
+  airMean: number | null; airMin: number | null; airMax: number | null; airSd: number | null;
+  waterMean: number | null; waterMin: number | null; waterMax: number | null; waterSd: number | null;
+  rhMean: number | null; waterMinusAir: number | null; airWaterCorr: number | null;
+}
+interface HourlyRow {
+  deviceUid: string; hour: string; n: number;
+  airMean: number | null; waterMean: number | null; waterMin: number | null; waterMax: number | null;
+}
+interface SiteRow {
+  site: string; nodes: number; n: number;
+  airMean: number | null; waterMean: number | null; waterMin: number | null; waterMax: number | null;
+}
+interface PairRow {
+  aUid: string; bUid: string; n: number;
+  waterDiffMean: number | null; waterDiffSd: number | null; waterCorr: number | null;
+  airDiffMean: number | null; airCorr: number | null;
+}
+interface NodeEvent { deviceUid: string; label: string; kind: string; at: string; message: string }
+interface Plateau { start: string; end: string | null; minutes: number }
+interface TimeConstant { tauMinutes: number; tInfC: number; r2: number; points: number }
+interface Stats {
+  windowHours: number;
+  nodes: NodeSummary[];
+  hourly: HourlyRow[];
+  sites: SiteRow[];
+  pairs: PairRow[];
+  events: NodeEvent[];
+  plateaus: Record<string, Plateau>;
+  timeConstants: Record<string, TimeConstant>;
 }
 
-interface ApiResponse {
-  readings: Reading[];
-  count: number;
-  generatedAt: string;
+type Row = Record<string, number | null> & { t: number };
+
+// ---------------------------------------------------------------- helpers
+
+// One colour per node; water is a solid line, air is dotted in the same colour
+const NODE_COLORS = ['#fb923c', '#38bdf8', '#34d399', '#f472b6'];
+const FORECAST_COLOR = '#a78bfa';
+// The Prophet worker trains on this node's air temperature
+const FORECAST_DEVICE = 'dev:351077454469720';
+
+const f1 = (v: number | null | undefined) =>
+  v === null || v === undefined || !Number.isFinite(v) ? '—' : v.toFixed(1);
+const f2 = (v: number | null | undefined) =>
+  v === null || v === undefined || !Number.isFinite(v) ? '—' : v.toFixed(2);
+const toF = (c: number) => (c * 9) / 5 + 32;
+const fmtTime = (t: number) =>
+  new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+const fmtDateTime = (iso: string) =>
+  new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+// Heat index (NOAA Rothfusz regression), °C in and out
+const heatIndex = (tC: number, rh: number) => {
+  const tF = toF(tC);
+  if (tF < 80) return tC; // the regression is only valid above 80 °F
+  const hiF = -42.379 + 2.04901523 * tF + 10.14333127 * rh
+    - 0.22475541 * tF * rh - 0.00683783 * tF * tF - 0.05481717 * rh * rh
+    + 0.00122874 * tF * tF * rh + 0.00085282 * tF * rh * rh - 0.00000199 * tF * tF * rh * rh;
+  return ((hiF - 32) * 5) / 9;
+};
+
+// Dew point (Magnus formula), °C
+const dewPoint = (tC: number, rh: number) => {
+  const a = 17.27, b = 237.7;
+  const alpha = (a * tC) / (b + tC) + Math.log(Math.max(rh, 1) / 100);
+  return (b * alpha) / (a - alpha);
+};
+
+function lastSeen(iso: string | undefined) {
+  if (!iso) return { text: 'no readings yet', color: 'text-slate-500' };
+  const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 120) return { text: `${s}s ago`, color: 'text-green-400' };
+  if (s < 3600) return { text: `${Math.floor(s / 60)} min ago`, color: s < 600 ? 'text-amber-400' : 'text-red-400' };
+  if (s < 86400) return { text: `${Math.floor(s / 3600)} h ago`, color: 'text-red-400' };
+  return { text: `${Math.floor(s / 86400)} days ago`, color: 'text-red-400' };
 }
 
-interface ForecastResponse {
-  forecasts: Forecast[];
-  forecastedAt: string | null;
-  count: number;
-}
+const tooltipStyle = { backgroundColor: '#1e293b', border: 'none', fontSize: 12 };
+
+// ---------------------------------------------------------------- component
 
 export default function Dashboard() {
-  const [data, setData] = useState<ApiResponse | null>(null);
-  const [forecasts, setForecasts] = useState<ForecastResponse | null>(null);
+  const [nodes, setNodes] = useState<NodeData[] | null>(null);
+  const [forecasts, setForecasts] = useState<Forecast[]>([]);
+  const [stats, setStats] = useState<Stats | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  const fetchData = async () => {
-    try {
-      const [readingsRes, forecastsRes] = await Promise.all([
-        fetch('/api/readings?limit=50'),
-        fetch('/api/forecasts')
-      ]);
-
-      if (!readingsRes.ok) throw new Error(`HTTP ${readingsRes.status}`);
-
-      const readingsJson = await readingsRes.json();
-      setData(readingsJson);
-
-      if (forecastsRes.ok) {
-        const forecastsJson = await forecastsRes.json();
-        setForecasts(forecastsJson);
-      }
-
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load data');
-    } finally {
-      setLoading(false);
-    }
-  };
 
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 10000);
-    return () => clearInterval(interval);
+    const loadLive = async () => {
+      try {
+        const [nodesRes, fcRes] = await Promise.all([
+          fetch('/api/nodes?limit=120'),
+          fetch('/api/forecasts'),
+        ]);
+        if (!nodesRes.ok) throw new Error(`HTTP ${nodesRes.status}`);
+        setNodes((await nodesRes.json()).nodes);
+        if (fcRes.ok) setForecasts((await fcRes.json()).forecasts ?? []);
+        setError(null);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to load data');
+      }
+    };
+    const loadStats = async () => {
+      try {
+        const res = await fetch('/api/stats?hours=24');
+        if (res.ok) setStats(await res.json());
+      } catch {
+        /* the live charts still work without the stats panel */
+      }
+    };
+    loadLive();
+    loadStats();
+    const live = setInterval(loadLive, 10000);
+    const agg = setInterval(loadStats, 60000);
+    return () => {
+      clearInterval(live);
+      clearInterval(agg);
+    };
   }, []);
 
-  if (loading) {
+  // One row per minute; each node writes its own columns, e.g. 0_w, 0_a, 1_w
+  const { rows, liveRows, tempDomain, hasForecast } = useMemo(() => {
+    const byMinute = new Map<number, Row>();
+    const get = (t: number) => {
+      let r = byMinute.get(t);
+      if (!r) {
+        r = { t } as Row;
+        byMinute.set(t, r);
+      }
+      return r;
+    };
+    const temps: number[] = [];
+    let forecastFrom = 0;
+
+    (nodes ?? []).forEach((node, i) => {
+      for (const r of node.readings) {
+        const t = Math.floor(new Date(r.capturedAt).getTime() / 60000) * 60000;
+        const row = get(t);
+        row[`${i}_a`] = r.tempC;
+        row[`${i}_rh`] = r.humidity;
+        row[`${i}_hi`] = heatIndex(r.tempC, r.humidity);
+        row[`${i}_dp`] = dewPoint(r.tempC, r.humidity);
+        temps.push(r.tempC);
+        if (r.probeTempC !== null) {
+          row[`${i}_w`] = r.probeTempC;
+          temps.push(r.probeTempC);
+        }
+        if (node.deviceUid === FORECAST_DEVICE) forecastFrom = Math.max(forecastFrom, t);
+      }
+    });
+
+    // Live rows only (no forecast) for the smaller charts
+    const live = Array.from(byMinute.values()).sort((a, b) => a.t - b.t);
+
+    // Only forecasts ahead of the forecast node's latest reading, and no further
+    // ahead than the live window is long, so the live data keeps at least half
+    // of the chart's width
+    let fcCount = 0;
+    if (forecastFrom > 0) {
+      const liveSpan = live.length ? live[live.length - 1].t - live[0].t : 0;
+      const horizon = Math.min(Math.max(liveSpan, 3600000), 24 * 3600000);
+      for (const f of forecasts) {
+        const t = new Date(f.targetAt).getTime();
+        if (f.tempC === null || t <= forecastFrom || t > forecastFrom + horizon || f.tempC < -50 || f.tempC > 60) continue;
+        get(t).fc = f.tempC;
+        temps.push(f.tempC);
+        fcCount++;
+      }
+    }
+
+    const sorted = Array.from(byMinute.values()).sort((a, b) => a.t - b.t);
+    const lo = temps.length ? Math.floor(Math.min(...temps) - 1) : 0;
+    const hi = temps.length ? Math.ceil(Math.max(...temps) + 1) : 30;
+    return { rows: sorted, liveRows: live, tempDomain: [lo, hi] as [number, number], hasForecast: fcCount > 0 };
+  }, [nodes, forecasts]);
+
+  // Hourly means per node, for the temporal-aggregation chart
+  const hourlyRows = useMemo(() => {
+    if (!stats || !nodes) return [];
+    const idx = new Map(nodes.map((n, i) => [n.deviceUid, i]));
+    const byHour = new Map<number, Row>();
+    for (const h of stats.hourly) {
+      const i = idx.get(h.deviceUid);
+      if (i === undefined) continue;
+      const t = new Date(h.hour).getTime();
+      const row = byHour.get(t) ?? ({ t } as Row);
+      row[`${i}_w`] = h.waterMean;
+      row[`${i}_a`] = h.airMean;
+      byHour.set(t, row);
+    }
+    return Array.from(byHour.values()).sort((a, b) => a.t - b.t);
+  }, [stats, nodes]);
+
+  if (error && !nodes) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+        <div className="text-red-400">Failed to load data ({error})</div>
+      </div>
+    );
+  }
+  if (!nodes) {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center">
         <div className="text-slate-400">Loading...</div>
@@ -100,330 +244,293 @@ export default function Dashboard() {
     );
   }
 
-  if (error) {
-    return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
-        <div className="text-red-400">Failed to load data<br />HTTP {error}</div>
+  const labelOf = (uid: string) => nodes.find((n) => n.deviceUid === uid)?.label ?? uid;
+  const colorOf = (uid: string) => {
+    const i = nodes.findIndex((n) => n.deviceUid === uid);
+    return NODE_COLORS[(i < 0 ? 0 : i) % NODE_COLORS.length];
+  };
+  const forecastNode = nodes.find((n) => n.deviceUid === FORECAST_DEVICE);
+
+  const xAxis = (
+    <XAxis
+      dataKey="t"
+      type="number"
+      scale="time"
+      domain={['dataMin', 'dataMax']}
+      tickFormatter={fmtTime}
+      stroke="#64748b"
+      fontSize={10}
+    />
+  );
+
+  const smallChart = (title: string, key: string, unit: string) => (
+    <div className="bg-slate-900 rounded-lg p-6">
+      <h3 className="text-sm text-slate-400 uppercase tracking-wide mb-1">{title}</h3>
+      <div className="flex flex-wrap gap-x-4 text-sm mb-3">
+        {nodes.map((n, i) => {
+          const r = n.readings[n.readings.length - 1];
+          const v = !r ? null
+            : key === 'rh' ? r.humidity
+            : key === 'hi' ? heatIndex(r.tempC, r.humidity)
+            : dewPoint(r.tempC, r.humidity);
+          return (
+            <span key={n.deviceUid} style={{ color: NODE_COLORS[i % NODE_COLORS.length] }}>
+              {n.label}: <b>{f1(v)}{unit}</b>
+            </span>
+          );
+        })}
       </div>
-    );
-  }
-
-  if (!data || data.readings.length === 0) {
-    return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
-        <div className="text-slate-400">No data available</div>
-      </div>
-    );
-  }
-
-  // API already returns chronological order (oldest first), so the newest reading is last
-  const readings = data.readings;
-  const latest = readings[readings.length - 1];
-  const lastSeenMs = new Date().getTime() - new Date(latest.capturedAt).getTime();
-  const lastSeenSeconds = Math.floor(lastSeenMs / 1000);
-
-  let lastSeenText = '';
-  let lastSeenColor = 'text-green-400';
-
-  if (lastSeenSeconds < 60) {
-    lastSeenText = `${lastSeenSeconds} seconds ago`;
-  } else if (lastSeenSeconds < 3600) {
-    const mins = Math.floor(lastSeenSeconds / 60);
-    lastSeenText = `${mins} ${mins === 1 ? 'minute' : 'minutes'} ago`;
-    lastSeenColor = lastSeenSeconds < 300 ? 'text-amber-400' : 'text-red-400';
-  } else {
-    const hours = Math.floor(lastSeenSeconds / 3600);
-    lastSeenText = `${hours} ${hours === 1 ? 'hour' : 'hours'} ago`;
-    lastSeenColor = 'text-red-400';
-  }
-  // Y-axis range covers both sensors (older readings have no probe value)
-  const probeValues = readings
-    .map((r) => r.probeTempC)
-    .filter((v): v is number => v !== null && v !== undefined);
-  const allTemps = [...readings.map((r) => r.tempC), ...probeValues];
-  const chartTempMin = Math.min(...allTemps) - 1;
-  const chartTempMax = Math.max(...allTemps) + 1;
-  const latestProbe = latest.probeTempC ?? null;
-
-  // Heat Index (NOAA Rothfusz regression, °C)
-const calcHeatIndex = (tC: number, rh: number) => {
-  const tF = tC * 9/5 + 32;
-  if (tF < 80) return tC;
-  const hiF = -42.379 + 2.04901523*tF + 10.14333127*rh 
-    - 0.22475541*tF*rh - 0.00683783*tF*tF - 0.05481717*rh*rh 
-    + 0.00122874*tF*tF*rh + 0.00085282*tF*rh*rh - 0.00000199*tF*tF*rh*rh;
-  return (hiF - 32) * 5/9;
-};
-
-// Dew Point (Magnus formula, °C)
-const calcDewPoint = (tC: number, rh: number) => {
-  const a = 17.27, b = 237.7;
-  const alpha = (a * tC) / (b + tC) + Math.log(rh / 100);
-  return (b * alpha) / (a - alpha);
-};
-
-const heatIndexData = readings.map((r) => ({
-  time: new Date(r.capturedAt).toLocaleTimeString(),
-  value: calcHeatIndex(r.tempC, r.humidity),
-}));
-
-const dewPointData = readings.map((r) => ({
-  time: new Date(r.capturedAt).toLocaleTimeString(),
-  value: calcDewPoint(r.tempC, r.humidity),
-}));
-
-const latestHeatIndex = calcHeatIndex(latest.tempC, latest.humidity);
-const latestDewPoint = calcDewPoint(latest.tempC, latest.humidity);
-const hiMin = Math.min(...heatIndexData.map(d => d.value));
-const hiMax = Math.max(...heatIndexData.map(d => d.value));
-const dpMin = Math.min(...dewPointData.map(d => d.value));
-const dpMax = Math.max(...dewPointData.map(d => d.value));
-
-  // Prepare temperature data with forecasts
-  const tempData: ChartPoint[] = readings.map((r) => ({
-    time: new Date(r.capturedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    timestamp: new Date(r.capturedAt).getTime(),
-    actual: r.tempC,
-    probe: r.probeTempC ?? null,
-    forecast: null,
-    lower: null,
-    upper: null,
-  }));
-
-  // Add forecast data
-  if (forecasts && forecasts.forecasts.length > 0) {
-    forecasts.forecasts.forEach((f) => {
-      if (new Date(f.targetAt).getTime() < new Date(latest.capturedAt).getTime()) return;
-      if (f.tempC === null || f.tempC < -50 || f.tempC > 60) return; // skip unreasonable numbers
-      tempData.push({
-        time: new Date(f.targetAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        timestamp: new Date(f.targetAt).getTime(),
-        actual: null,
-        probe: null,
-        forecast: f.tempC,
-        lower: null,
-        upper: null,
-      });
-    });
-  }
-
-  // Sort by timestamp
-  tempData.sort((a, b) => a.timestamp - b.timestamp);
-
-  const humData = readings.map((r) => ({
-    time: new Date(r.capturedAt).toLocaleTimeString(),
-    value: r.humidity,
-  }));
-
-  const pressData = readings.map((r) => ({
-    time: new Date(r.capturedAt).toLocaleTimeString(),
-    value: r.pressureHpa,
-  }));
-
-  const vocData = readings.map((r) => ({
-    time: new Date(r.capturedAt).toLocaleTimeString(),
-    value: r.vocOhms,
-  }));
-
-  const tempMin = Math.min(...readings.map((r) => r.tempC));
-  const tempMax = Math.max(...readings.map((r) => r.tempC));
-  const humMin = Math.min(...readings.map((r) => r.humidity));
-  const humMax = Math.max(...readings.map((r) => r.humidity));
-  const pressMin = Math.min(...readings.map((r) => r.pressureHpa ?? 0));
-  const pressMax = Math.max(...readings.map((r) => r.pressureHpa ?? 0));
-  const vocMin = Math.min(...readings.map((r) => r.vocOhms ?? 0));
-  const vocMax = Math.max(...readings.map((r) => r.vocOhms ?? 0));
+      <ResponsiveContainer width="100%" height={180}>
+        <LineChart data={liveRows}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+          {xAxis}
+          <YAxis stroke="#64748b" fontSize={10} domain={['dataMin - 1', 'dataMax + 1']} tickFormatter={(v: number) => v.toFixed(1)} />
+          <Tooltip contentStyle={tooltipStyle} labelFormatter={(t) => fmtTime(Number(t))} formatter={(v) => f1(Number(v))} />
+          {nodes.map((n, i) => (
+            <Line key={n.deviceUid} dataKey={`${i}_${key}`} name={n.label} type="monotone"
+              stroke={NODE_COLORS[i % NODE_COLORS.length]} strokeWidth={2} dot={false} connectNulls />
+          ))}
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
 
   return (
     <div className="min-h-screen bg-slate-950 text-white p-8">
       {/* Header */}
       <div className="mb-8">
         <h1 className="text-4xl font-bold mb-2">bayes-iot</h1>
-        <p className="text-slate-400">Real-time IoT pipeline · Bayesian time-series forecasting</p>
-        <a
-          href="https://github.com/jaycoed365/bayes-iot-pipeline"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-blue-400 hover:text-blue-300 text-sm"
-        >
+        <p className="text-slate-400">
+          Distributed IoT sensing · {nodes.length} {nodes.length === 1 ? 'node' : 'nodes'} · aggregation and Bayesian forecasting
+        </p>
+        <a href="https://github.com/jaycoed365/bayes-iot-pipeline" target="_blank" rel="noopener noreferrer"
+          className="text-blue-400 hover:text-blue-300 text-sm">
           github.com/jaycoed365/bayes-iot-pipeline →
         </a>
       </div>
 
-      {/* Status Bar */}
-      <div className="mb-6 flex items-center gap-6 text-sm">
-        <div className="text-slate-300">
-          <span className="text-slate-500">●</span> {data.readings.length} readings · device {latest.deviceUid}
-        </div>
-        <div className={`${lastSeenColor}`}>
-          last reading {lastSeenText}
-        </div>
-        {forecasts && forecasts.count > 0 && (
-          <div className="text-blue-400">
-            {forecasts.count} forecasts · Prophet baseline
-          </div>
+      {/* Node cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+        {nodes.map((n, i) => {
+          const r = n.readings[n.readings.length - 1];
+          const seen = lastSeen(r?.capturedAt);
+          const color = NODE_COLORS[i % NODE_COLORS.length];
+          return (
+            <div key={n.deviceUid} className="bg-slate-900 rounded-lg p-6" style={{ borderTop: `4px solid ${color}` }}>
+              <div className="flex items-baseline justify-between gap-4">
+                <h2 className="text-xl font-semibold" style={{ color }}>{n.label}</h2>
+                <span className={`text-sm ${seen.color}`}>last reading {seen.text}</span>
+              </div>
+              <p className="text-xs text-slate-500 mb-4">{n.site} · {n.deviceUid}</p>
+              <div className="grid grid-cols-3 gap-4">
+                <div>
+                  <div className="text-xs text-slate-400 uppercase">Water</div>
+                  <div className="text-3xl font-bold" style={{ color }}>{f1(r?.probeTempC)}°C</div>
+                  <div className="text-xs text-slate-500">{r?.probeTempC != null ? `${f1(toF(r.probeTempC))}°F` : 'probe not reporting'}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-400 uppercase">Air</div>
+                  <div className="text-3xl font-bold text-slate-200">{f1(r?.tempC)}°C</div>
+                  <div className="text-xs text-slate-500">{r ? `${f1(toF(r.tempC))}°F` : ''}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-400 uppercase">Humidity</div>
+                  <div className="text-3xl font-bold text-slate-200">{f1(r?.humidity)}%</div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+        {nodes.length === 0 && (
+          <div className="bg-slate-900 rounded-lg p-6 text-slate-400">No nodes registered yet.</div>
         )}
       </div>
 
-      {/* Charts Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Temperature with Forecast */}
-        <div className="bg-slate-900 rounded-lg p-6">
-          <div className="mb-4">
-            <h3 className="text-sm text-slate-400 uppercase tracking-wide">Temperature + Forecast</h3>
-            <div className="text-3xl font-bold text-orange-400">
-              {latest.tempC.toFixed(1)}°C
-              <span className="text-xl text-slate-500 ml-2">
-                ({(latest.tempC * 9 / 5 + 32).toFixed(1)}°F)
-              </span>
-            </div>
-            {latestProbe !== null && (
-              <div className="text-lg font-semibold text-purple-400">
-                probe {latestProbe.toFixed(1)}°C
-                <span className="text-slate-500 ml-2">({(latestProbe * 9 / 5 + 32).toFixed(1)}°F)</span>
-              </div>
+      {/* All temperature channels on one chart */}
+      <div className="bg-slate-900 rounded-lg p-6 mb-6">
+        <h3 className="text-sm text-slate-400 uppercase tracking-wide mb-1">Temperature · every channel</h3>
+        <p className="text-xs text-slate-500 mb-4">
+          Solid: water (DS18B20) · dotted: air (DHT11)
+          {hasForecast && forecastNode ? ` · dashed purple: Prophet forecast of ${forecastNode.label} air` : ''}
+        </p>
+        <ResponsiveContainer width="100%" height={300}>
+          <LineChart data={rows}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+            {xAxis}
+            <YAxis stroke="#64748b" fontSize={10} domain={tempDomain} tickFormatter={(v: number) => v.toFixed(1)} />
+            <Tooltip contentStyle={tooltipStyle} labelFormatter={(t) => fmtTime(Number(t))} formatter={(v) => `${f1(Number(v))} °C`} />
+            <Legend wrapperStyle={{ fontSize: '11px' }} iconSize={10} />
+            {nodes.flatMap((n, i) => [
+              <Line key={`${n.deviceUid}-w`} dataKey={`${i}_w`} name={`${n.label} water`} type="monotone"
+                stroke={NODE_COLORS[i % NODE_COLORS.length]} strokeWidth={2.5} dot={false} connectNulls />,
+              <Line key={`${n.deviceUid}-a`} dataKey={`${i}_a`} name={`${n.label} air`} type="monotone"
+                stroke={NODE_COLORS[i % NODE_COLORS.length]} strokeWidth={1.5} strokeDasharray="2 4" dot={false} connectNulls />,
+            ])}
+            {hasForecast && (
+              <Line dataKey="fc" name="Forecast" type="monotone" stroke={FORECAST_COLOR}
+                strokeWidth={2} strokeDasharray="6 4" dot={false} connectNulls />
             )}
-            <div className="text-xs text-slate-500 mt-1">
-              min {tempMin.toFixed(1)}°C ({(tempMin * 9 / 5 + 32).toFixed(1)}°F) ·
-              max {tempMax.toFixed(1)}°C ({(tempMax * 9 / 5 + 32).toFixed(1)}°F)
-            </div>
-          </div>
-          <ResponsiveContainer width="100%" height={200}>
-            <ComposedChart data={tempData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-              <XAxis
-                dataKey="time"
-                stroke="#64748b"
-                fontSize={10}
-                interval="preserveStartEnd"
-                tick={{ fontSize: 9 }}
-              />
-              <YAxis stroke="#64748b" fontSize={10} domain={[chartTempMin, chartTempMax]} tickFormatter={(v: number) => v.toFixed(1)} />
-              <Tooltip
-                contentStyle={{ backgroundColor: '#1e293b', border: 'none' }}
-                labelStyle={{ color: '#94a3b8' }}
-              />
-              <Legend
-                wrapperStyle={{ fontSize: '11px' }}
-                iconSize={10}
-              />
-              {/* Actual temperature line */}
-              <Line
-                type="monotone"
-                dataKey="actual"
-                stroke="#fb923c"
-                strokeWidth={2}
-                dot={false}
-                name="DHT11"
-                connectNulls={false}
-              />
-              {/* DS18B20 probe line (only drawn where readings have a probe value) */}
-              {probeValues.length > 0 && (
-                <Line
-                  type="monotone"
-                  dataKey="probe"
-                  stroke="#c084fc"
-                  strokeWidth={2}
-                  dot={false}
-                  name="Probe (DS18B20)"
-                  connectNulls={false}
-                />
-              )}
-              {/* Forecast line */}
-              <Line
-                type="monotone"
-                dataKey="forecast"
-                stroke="#3b82f6"
-                strokeWidth={2}
-                strokeDasharray="5 5"
-                dot={false}
-                name="Forecast"
-                connectNulls
-              />
-            </ComposedChart>
-          </ResponsiveContainer>
-        </div>
-
-        {/* Humidity */}
-        <div className="bg-slate-900 rounded-lg p-6">
-          <div className="mb-4">
-            <h3 className="text-sm text-slate-400 uppercase tracking-wide">Humidity</h3>
-            <div className="text-3xl font-bold text-blue-400">
-              {latest.humidity.toFixed(1)}%
-            </div>
-            <div className="text-xs text-slate-500 mt-1">
-              min {humMin.toFixed(1)} · max {humMax.toFixed(1)}
-            </div>
-          </div>
-          <ResponsiveContainer width="100%" height={200}>
-            <LineChart data={humData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-              <XAxis dataKey="time" stroke="#64748b" fontSize={10} />
-              <YAxis stroke="#64748b" fontSize={10} domain={['dataMin - 2', 'dataMax + 2']} tickFormatter={(v: number) => v.toFixed(1)} />
-              <Tooltip
-                contentStyle={{ backgroundColor: '#1e293b', border: 'none' }}
-                labelStyle={{ color: '#94a3b8' }}
-              />
-              <Line type="monotone" dataKey="value" stroke="#60a5fa" strokeWidth={2} dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-{/* Heat Index */}
-<div className="bg-slate-900 rounded-lg p-6">
-  <div className="mb-4">
-    <h3 className="text-sm text-slate-400 uppercase tracking-wide">Heat Index</h3>
-    <div className="text-3xl font-bold text-red-400">
-      {latestHeatIndex.toFixed(1)}°C
-      <span className="text-xl text-slate-500 ml-2">
-        ({(latestHeatIndex * 9/5 + 32).toFixed(1)}°F)
-      </span>
-    </div>
-    <div className="text-xs text-slate-500 mt-1">
-      "feels like" · min {hiMin.toFixed(1)}°C · max {hiMax.toFixed(1)}°C
-    </div>
-  </div>
-  <ResponsiveContainer width="100%" height={200}>
-    <LineChart data={heatIndexData}>
-      <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-      <XAxis dataKey="time" stroke="#64748b" fontSize={10} />
-      <YAxis stroke="#64748b" fontSize={10} domain={['dataMin - 1', 'dataMax + 1']} tickFormatter={(v: number) => v.toFixed(1)} />
-      <Tooltip
-        contentStyle={{ backgroundColor: '#1e293b', border: 'none' }}
-        labelStyle={{ color: '#94a3b8' }}
-      />
-      <Line type="monotone" dataKey="value" stroke="#f87171" strokeWidth={2} dot={false} />
-    </LineChart>
-  </ResponsiveContainer>
-</div>
-
-{/* Dew Point */}
-<div className="bg-slate-900 rounded-lg p-6">
-  <div className="mb-4">
-    <h3 className="text-sm text-slate-400 uppercase tracking-wide">Dew Point</h3>
-    <div className="text-3xl font-bold text-cyan-400">
-      {latestDewPoint.toFixed(1)}°C
-      <span className="text-xl text-slate-500 ml-2">
-        ({(latestDewPoint * 9/5 + 32).toFixed(1)}°F)
-      </span>
-    </div>
-    <div className="text-xs text-slate-500 mt-1">
-      min {dpMin.toFixed(1)}°C · max {dpMax.toFixed(1)}°C
-    </div>
-  </div>
-  <ResponsiveContainer width="100%" height={200}>
-    <LineChart data={dewPointData}>
-      <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-      <XAxis dataKey="time" stroke="#64748b" fontSize={10} />
-      <YAxis stroke="#64748b" fontSize={10} domain={['dataMin - 1', 'dataMax + 1']} tickFormatter={(v: number) => v.toFixed(1)} />
-      <Tooltip
-        contentStyle={{ backgroundColor: '#1e293b', border: 'none' }}
-        labelStyle={{ color: '#94a3b8' }}
-      />
-      <Line type="monotone" dataKey="value" stroke="#22d3ee" strokeWidth={2} dot={false} />
-    </LineChart>
-  </ResponsiveContainer>
-</div>
+          </LineChart>
+        </ResponsiveContainer>
       </div>
+
+      {/* Derived and humidity channels */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-10">
+        {smallChart('Humidity', 'rh', '%')}
+        {smallChart('Heat index', 'hi', '°C')}
+        {smallChart('Dew point', 'dp', '°C')}
+      </div>
+
+      {/* ------------------------------------------------ aggregation */}
+      <h2 className="text-2xl font-bold mb-1">Aggregation</h2>
+      <p className="text-slate-400 text-sm mb-6">
+        Computed in Postgres over the last {stats?.windowHours ?? 24} hours · refreshes every minute
+      </p>
+
+      {!stats ? (
+        <div className="text-slate-500 mb-10">Loading statistics...</div>
+      ) : (
+        <>
+          {/* Per-node summary */}
+          <div className="bg-slate-900 rounded-lg p-6 mb-6 overflow-x-auto">
+            <h3 className="text-sm text-slate-400 uppercase tracking-wide mb-4">Per node · summary statistics</h3>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-slate-400 text-left border-b border-slate-700">
+                  <th className="py-2 pr-4">Node</th>
+                  <th className="py-2 pr-4 text-right">Readings</th>
+                  <th className="py-2 pr-4 text-right">Water mean</th>
+                  <th className="py-2 pr-4 text-right">Water min / max</th>
+                  <th className="py-2 pr-4 text-right">Water σ</th>
+                  <th className="py-2 pr-4 text-right">Air mean</th>
+                  <th className="py-2 pr-4 text-right">Air min / max</th>
+                  <th className="py-2 pr-4 text-right">Water − air</th>
+                  <th className="py-2 text-right">Corr(water, air)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stats.nodes.map((s) => (
+                  <tr key={s.deviceUid} className="border-b border-slate-800">
+                    <td className="py-2 pr-4 font-semibold" style={{ color: colorOf(s.deviceUid) }}>{s.label}</td>
+                    <td className="py-2 pr-4 text-right">{s.n}</td>
+                    <td className="py-2 pr-4 text-right">{f1(s.waterMean)} °C</td>
+                    <td className="py-2 pr-4 text-right">{f1(s.waterMin)} / {f1(s.waterMax)}</td>
+                    <td className="py-2 pr-4 text-right">{f2(s.waterSd)}</td>
+                    <td className="py-2 pr-4 text-right">{f1(s.airMean)} °C</td>
+                    <td className="py-2 pr-4 text-right">{f1(s.airMin)} / {f1(s.airMax)}</td>
+                    <td className="py-2 pr-4 text-right">{f1(s.waterMinusAir)} °C</td>
+                    <td className="py-2 text-right">{f2(s.airWaterCorr)}</td>
+                  </tr>
+                ))}
+                {stats.nodes.length === 0 && (
+                  <tr><td colSpan={9} className="py-3 text-slate-500">No readings in this window yet.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+            {/* Hierarchical rollup */}
+            <div className="bg-slate-900 rounded-lg p-6">
+              <h3 className="text-sm text-slate-400 uppercase tracking-wide mb-4">Site rollup · node → site</h3>
+              {stats.sites.map((s) => (
+                <div key={s.site} className="mb-3">
+                  <div className="text-lg font-semibold">{s.site}</div>
+                  <div className="text-sm text-slate-400">{s.nodes} nodes · {s.n} readings</div>
+                  <div className="text-sm mt-1">
+                    Water mean <b>{f1(s.waterMean)} °C</b> (range {f1(s.waterMin)} to {f1(s.waterMax)}) · air mean <b>{f1(s.airMean)} °C</b>
+                  </div>
+                </div>
+              ))}
+              {stats.sites.length === 0 && <div className="text-slate-500 text-sm">No data yet.</div>}
+            </div>
+
+            {/* Cross-sensor comparison */}
+            <div className="bg-slate-900 rounded-lg p-6">
+              <h3 className="text-sm text-slate-400 uppercase tracking-wide mb-4">Cross-node comparison</h3>
+              {stats.pairs.map((p) => (
+                <div key={`${p.aUid}-${p.bUid}`} className="text-sm space-y-1 mb-3">
+                  <div className="font-semibold">
+                    <span style={{ color: colorOf(p.aUid) }}>{labelOf(p.aUid)}</span> vs{' '}
+                    <span style={{ color: colorOf(p.bUid) }}>{labelOf(p.bUid)}</span>
+                  </div>
+                  <div>Water difference: <b>{f1(p.waterDiffMean)} ± {f1(p.waterDiffSd)} °C</b></div>
+                  <div>Water correlation: <b>{f2(p.waterCorr)}</b></div>
+                  <div>Air difference: <b>{f1(p.airDiffMean)} °C</b> · air correlation <b>{f2(p.airCorr)}</b></div>
+                  <div className="text-xs text-slate-500">{p.n} matched minutes</div>
+                </div>
+              ))}
+              {stats.pairs.length === 0 && (
+                <div className="text-slate-500 text-sm">Needs two nodes reporting in the same minutes.</div>
+              )}
+            </div>
+
+            {/* Events */}
+            <div className="bg-slate-900 rounded-lg p-6">
+              <h3 className="text-sm text-slate-400 uppercase tracking-wide mb-4">Events</h3>
+              <ul className="space-y-2 text-sm">
+                {stats.events.map((e, k) => (
+                  <li key={k} className="flex gap-3">
+                    <span className="text-slate-500 whitespace-nowrap">{fmtDateTime(e.at)}</span>
+                    <span className={e.kind === 'node_silent' ? 'text-red-400' : ''}>{e.message}</span>
+                  </li>
+                ))}
+                {stats.events.length === 0 && <li className="text-slate-500">No events in this window.</li>}
+              </ul>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-10">
+            {/* Temporal aggregation */}
+            <div className="bg-slate-900 rounded-lg p-6 lg:col-span-2">
+              <h3 className="text-sm text-slate-400 uppercase tracking-wide mb-4">Hourly means</h3>
+              <ResponsiveContainer width="100%" height={220}>
+                <LineChart data={hourlyRows}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                  {xAxis}
+                  <YAxis stroke="#64748b" fontSize={10} domain={['dataMin - 1', 'dataMax + 1']} tickFormatter={(v: number) => v.toFixed(1)} />
+                  <Tooltip contentStyle={tooltipStyle} labelFormatter={(t) => fmtTime(Number(t))} formatter={(v) => `${f1(Number(v))} °C`} />
+                  <Legend wrapperStyle={{ fontSize: '11px' }} iconSize={10} />
+                  {nodes.flatMap((n, i) => [
+                    <Line key={`${n.deviceUid}-hw`} dataKey={`${i}_w`} name={`${n.label} water`}
+                      stroke={NODE_COLORS[i % NODE_COLORS.length]} strokeWidth={2} dot connectNulls />,
+                    <Line key={`${n.deviceUid}-ha`} dataKey={`${i}_a`} name={`${n.label} air`}
+                      stroke={NODE_COLORS[i % NODE_COLORS.length]} strokeWidth={1.5} strokeDasharray="2 4" dot={false} connectNulls />,
+                  ])}
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+
+            {/* Physics: melting plateau and warming time constant */}
+            <div className="bg-slate-900 rounded-lg p-6">
+              <h3 className="text-sm text-slate-400 uppercase tracking-wide mb-4">Melting and warming</h3>
+              {Object.keys(stats.plateaus).length === 0 && Object.keys(stats.timeConstants).length === 0 && (
+                <p className="text-sm text-slate-500">
+                  Appears once a cup sits at the 0 °C melting plateau (about 5 minutes between −1 and +1 °C).
+                </p>
+              )}
+              {Object.entries(stats.plateaus).map(([uid, p]) => (
+                <div key={uid} className="text-sm mb-3">
+                  <div className="font-semibold" style={{ color: colorOf(uid) }}>{labelOf(uid)}</div>
+                  <div>
+                    0 °C plateau: <b>{p.minutes} min</b> {p.end ? '(all ice melted)' : '(still melting)'}
+                  </div>
+                </div>
+              ))}
+              {Object.entries(stats.timeConstants).map(([uid, tc]) => (
+                <div key={uid} className="text-sm mb-3">
+                  <div>
+                    Warming time constant τ = <b>{f1(tc.tauMinutes)} min</b>
+                  </div>
+                  <div className="text-xs text-slate-500">
+                    Fit of T(t) = T∞ − (T∞ − T₀)·e^(−t/τ), T∞ = {f1(tc.tInfC)} °C, R² = {f2(tc.r2)}, {tc.points} points
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
 
       {/* Footer */}
       <div className="mt-8 text-center text-xs text-slate-500">
