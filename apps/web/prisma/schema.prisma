@@ -76,5 +76,40 @@ model Device {
   label     String
   site      String   @default("Lab bench")
   sortOrder Int      @default(0)
+  role      String   @default("room") // "frozen" turns on the freezer-failure alarm
   createdAt DateTime @default(now())
+}
+
+// A temperature alarm episode: opened when a rule trips, closed when the
+// reading is safely back to normal. One open alarm per device and kind.
+model Alarm {
+  id          String    @id @default(cuid())
+  deviceUid   String
+  ruleId      String?   // the AlarmRule that opened it
+  kind        String    // channel_condition, e.g. "water_rising"
+  message     String
+  value       Float?    // latest 5-minute mean, °C
+  rate        Float?    // °C per minute between two 5-minute means
+  triggeredAt DateTime
+  clearedAt   DateTime?
+  notified    Boolean   @default(false) // phone push accepted by ntfy
+
+  @@index([deviceUid, kind, clearedAt])
+  @@index([deviceUid, ruleId, clearedAt])
+  @@index([triggeredAt])
+}
+
+// An alarm rule, edited on the dashboard. Checked after every reading.
+model AlarmRule {
+  id        String   @id @default(cuid())
+  deviceUid String?  // null = every node
+  channel   String   // "water", "air" or "humidity"
+  condition String   // "above", "below", "rising" or "falling"
+  threshold Float    // level in °C or %, or a rate per minute
+  windowMin Int      @default(5) // averaging window: 1, 5 or 15 minutes
+  enabled   Boolean  @default(true)
+  push      Boolean  @default(true) // send a phone push through ntfy
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }

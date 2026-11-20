@@ -5,3 +5,4 @@ python-dotenv==1.0.1
 numpy==1.26.3
 pymc==5.10.4
 arviz==0.17.0
+matplotlib

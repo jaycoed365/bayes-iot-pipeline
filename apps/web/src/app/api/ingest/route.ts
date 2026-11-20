@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { evaluateDeviceAlarms } from '@/lib/alarmStore';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -68,6 +69,13 @@ export async function POST(request: NextRequest) {
     } catch (e) {
       // Never lose a reading because of the device registry
       console.error('Device upsert failed:', e);
+    }
+
+    // Temperature alarms: freezer failure and room heating, on 5-minute means
+    try {
+      await evaluateDeviceAlarms(deviceUid, capturedAt);
+    } catch (e) {
+      console.error('Alarm check failed:', e);
     }
 
     return NextResponse.json({

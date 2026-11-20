@@ -9,3 +9,6 @@ dist
 
 # Claude Code handoff notes (local only)
 CLAUDE.md
+
+# Analysis output (raw CSV exports and figures; regenerate with analyze_experiment.py)
+apps/forecaster/results/

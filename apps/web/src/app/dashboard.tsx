@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import AlarmSettings from './alarm-settings';
 import {
   LineChart,
   Line,
@@ -68,6 +69,19 @@ interface Stats {
   timeConstants: Record<string, TimeConstant>;
 }
 
+interface AlarmRow {
+  id: string; deviceUid: string; label: string; kind: string; message: string;
+  value: number | null; rate: number | null; triggeredAt: string; clearedAt: string | null; notified: boolean;
+}
+interface Alarms { active: AlarmRow[]; recent: AlarmRow[]; pushEnabled: boolean; rulesWatching: number }
+
+// "water_rising" -> "Water rising alarm"
+const alarmTitle = (kind: string) => {
+  const [channel, condition] = kind.split('_');
+  if (!condition) return 'Alarm';
+  return `${channel.charAt(0).toUpperCase()}${channel.slice(1)} ${condition} alarm`;
+};
+
 type Row = Record<string, number | null> & { t: number };
 
 // ---------------------------------------------------------------- helpers
@@ -126,17 +140,20 @@ export default function Dashboard() {
   const [forecasts, setForecasts] = useState<Forecast[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [alarms, setAlarms] = useState<Alarms | null>(null);
 
   useEffect(() => {
     const loadLive = async () => {
       try {
-        const [nodesRes, fcRes] = await Promise.all([
+        const [nodesRes, fcRes, alarmRes] = await Promise.all([
           fetch(`/api/nodes?hours=${LIVE_WINDOW_HOURS}&limit=${LIVE_WINDOW_HOURS * 60}`),
           fetch('/api/forecasts'),
+          fetch('/api/alarms'),
         ]);
         if (!nodesRes.ok) throw new Error(`HTTP ${nodesRes.status}`);
         setNodes((await nodesRes.json()).nodes);
         if (fcRes.ok) setForecasts((await fcRes.json()).forecasts ?? []);
+        if (alarmRes.ok) setAlarms(await alarmRes.json());
         setError(null);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load data');
@@ -312,6 +329,38 @@ export default function Dashboard() {
           github.com/jaycoed365/bayes-iot-pipeline →
         </a>
       </div>
+
+      {/* Alarms */}
+      {alarms && alarms.active.length > 0 && (
+        <div className="mb-6 space-y-3">
+          {alarms.active.map((a) => (
+            <div key={a.id} className="rounded-lg border-2 border-red-500 bg-red-950/60 p-4 animate-pulse">
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <span className="text-lg font-bold text-red-300">
+                  {alarmTitle(a.kind)} · {a.label}
+                </span>
+                <span className="text-sm text-red-200">
+                  since {fmtDateTime(a.triggeredAt)}{a.notified ? ' · phone notified' : ''}
+                </span>
+              </div>
+              <p className="text-red-100 mt-1">{a.message}</p>
+            </div>
+          ))}
+        </div>
+      )}
+      {alarms && alarms.active.length === 0 && (
+        <div className="mb-6 rounded-lg border border-emerald-700 bg-emerald-950/40 px-4 py-3 text-sm text-emerald-200">
+          No active alarms · {alarms.rulesWatching} {alarms.rulesWatching === 1 ? 'rule' : 'rules'} watching.
+          {alarms.recent.length > 0 && (
+            <span className="text-emerald-400">
+              {' '}Last alarm: {alarms.recent[0].label}, {fmtDateTime(alarms.recent[0].triggeredAt)}
+              {alarms.recent[0].clearedAt ? `, cleared ${fmtDateTime(alarms.recent[0].clearedAt)}` : ''}.
+            </span>
+          )}
+        </div>
+      )}
+
+      <AlarmSettings />
 
       {/* Node cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
